@@ -1,0 +1,41 @@
+No tickers crossed thresholds today.
+ALERTS:
+symbol  owners_count    total_usd                 last_when
+ XCPIX             2 6.000000e+05 2025-11-04 13:01:09+00:00
+  MTDR             2 1.214732e+05 2025-11-04 12:32:09+00:00
+  NEWT             2 3.080000e+04 2025-11-04 12:19:33+00:00
+   MSM             1 1.286473e+07 2025-11-04 00:24:11+00:00
+  WOLF             1 3.690668e+06 2025-11-04 11:04:24+00:00
+ XASIX             1 2.542337e+05 2025-11-04 02:59:48+00:00
+   AJG             1 1.322689e+05 2025-11-04 02:04:13+00:00
+  FFIN             1 5.224100e+04 2025-11-03 15:12:48+00:00
+  FINW             1 4.352815e+04 2025-11-04 01:34:48+00:00
+  GLSI             1 4.259600e+04 2025-11-04 11:16:15+00:00
+  CZFS             1 1.501200e+04 2025-11-04 12:31:42+00:00
+No tickers crossed thresholds today.
+No tickers crossed thresholds today.
+[WARN] https://www.sec.gov/Archives/edgar/data/728535/000194378225000003/0001943782-25-000003-index.htm: ('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))
+No new Form 4 purchases found.
+No new Form 4 purchases found.
+No tickers crossed thresholds today.
+[WARN] https://www.sec.gov/Archives/edgar/data/96869/000119312525269056/0001193125-25-269056-index.htm: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+[WARN] https://www.sec.gov/Archives/edgar/data/76267/000143774925033566/0001437749-25-033566-index.htm: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+[WARN] https://www.sec.gov/Archives/edgar/data/1174850/000117485025000083/0001174850-25-000083-index.htm: HTTPSConnectionPool(host='www.sec.gov', port=443): Read timed out. (read timeout=30)
+[WARN] https://www.sec.gov/Archives/edgar/data/1355064/000158064225007071/0001580642-25-007071-index.htm: HTTPSConnectionPool(host='www.sec.gov', port=443): Read timed out. (read timeout=30)
+[WARN] https://www.sec.gov/Archives/edgar/data/927971/000121465925016029/0001214659-25-016029-index.htm: HTTPSConnectionPool(host='www.sec.gov', port=443): Read timed out. (read timeout=30)
+[WARN] https://www.sec.gov/Archives/edgar/data/1415726/000121390025107065/0001213900-25-107065-index.htm: HTTPSConnectionPool(host='www.sec.gov', port=443): Read timed out. (read timeout=30)
+[WARN] https://www.sec.gov/Archives/edgar/data/1682472/000191870425019232/0001918704-25-019232-index.htm: HTTPSConnectionPool(host='www.sec.gov', port=443): Read timed out. (read timeout=30)
+[WARN] https://www.sec.gov/Archives/edgar/data/1806095/000119312525268929/0001193125-25-268929-index.htm: ('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))
+[WARN] https://www.sec.gov/Archives/edgar/data/1355064/000158064225007067/0001580642-25-007067-index.htm: ('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))
+[WARN] https://www.sec.gov/Archives/edgar/data/1666268/000183988225064284/0001839882-25-064284-index.htm: ('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))
+[WARN] https://www.sec.gov/Archives/edgar/data/1045520/000110465925107615/0001104659-25-107615-index.htm: ('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))
+No tickers crossed thresholds today.
+No tickers crossed thresholds today.
+[WARN] https://www.sec.gov/Archives/edgar/data/1280493/000091957425006533/0000919574-25-006533-index.htm: ('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))
+[WARN] https://www.sec.gov/Archives/edgar/data/783324/000091957425006532/0000919574-25-006532-index.htm: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+ALERTS:
+symbol  owners_count   total_usd                 last_when
+  BETA             7 98997687.46 2025-11-08 02:00:12+00:00
+ALERTS:
+symbol  owners_count   total_usd                 last_when
+  BETA             7 99017679.46 2025-11-08 02:00:12+00:00
