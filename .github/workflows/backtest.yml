@@ -1,0 +1,79 @@
+name: Backtest
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: 'Start date (YYYY-MM-DD). Leave empty for 2024-01-01'
+        required: false
+      end:
+        description: 'End date (YYYY-MM-DD). Leave empty for today (UTC)'
+        required: false
+      window:
+        description: 'Signal lookback window (days)'
+        required: false
+        default: '14'
+      min_owners:
+        description: 'Min distinct insiders'
+        required: false
+        default: '3'
+      min_usd:
+        description: 'Min total USD buys'
+        required: false
+        default: '300000'
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests beautifulsoup4 lxml python-dateutil pyarrow yfinance tqdm
+
+      - name: Backfill SEC → trades.parquet
+        env:
+          # Optional: set a contact email for SEC requests. Safe to leave as default.
+          SEC_EMAIL: "your.name@example.com"
+        run: |
+          set -eux
+          START="${{ github.event.inputs.start }}"
+          END="${{ github.event.inputs.end }}"
+          [ -z "$START" ] && START="2024-01-01"
+          [ -z "$END" ] && END="$(date -u +%F)"
+          python backtest/backfill_sec.py --start "$START" --end "$END" --out backtest/trades.parquet | tee backtest/backfill.log
+
+      - name: Build signals → signals.parquet
+        run: |
+          python backtest/build_signals.py \
+            --trades backtest/trades.parquet \
+            --out backtest/signals.parquet \
+            --window "${{ github.event.inputs.window }}" \
+            --min_owners "${{ github.event.inputs.min_owners }}" \
+            --min_usd "${{ github.event.inputs.min_usd }}" | tee backtest/build_signals.log
+
+      - name: Evaluate → report.csv
+        run: |
+          python backtest/evaluate.py \
+            --signals backtest/signals.parquet \
+            --out backtest/report.csv \
+            --cost_bps 20 \
+            --horizons 5 21 63 | tee backtest/evaluate.log
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest_outputs
+          path: |
+            backtest/trades.parquet
+            backtest/signals.parquet
+            backtest/report.csv
+            backtest/*.log
