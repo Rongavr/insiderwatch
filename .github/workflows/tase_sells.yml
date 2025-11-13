@@ -1,0 +1,49 @@
+name: TASE Sell Alerts (3× daily)
+
+on:
+  schedule:
+    - cron: "45 7 * * *"   # 09:45 IL open (UTC+2)
+    - cron: "30 11 * * *"  # 13:30 IL mid
+    - cron: "35 15 * * *"  # 17:35 IL close
+  workflow_dispatch: {}
+
+jobs:
+  tase:
+    runs-on: ubuntu-latest
+    env:
+      FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
+      MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+      MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+      SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
+      SMTP_PORT:     ${{ secrets.SMTP_PORT }}
+      TO_EMAIL:      ${{ secrets.TO_EMAIL }}
+      # Optional: comma-separated MAYA RSS URLs. If empty, script exits cleanly.
+      TASE_RSS_URLS: ${{ secrets.TASE_RSS_URLS }}
+      MIN_NIS: "0"   # start with no floor; we can raise later
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 lxml feedparser pandas python-dateutil
+
+      - name: Run TASE scanner
+        run: |
+          python tase_sells.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tase_outputs
+          path: |
+            tase_alerts.csv
+            tase_trades.csv
+            tase.log
+          if-no-files-found: ignore
