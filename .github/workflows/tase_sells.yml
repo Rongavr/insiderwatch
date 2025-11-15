@@ -12,15 +12,22 @@ jobs:
   tase:
     runs-on: ubuntu-latest
     env:
-      MAIL_USER:   ${{ secrets.MAIL_USER }}
-      MAIL_PASS:   ${{ secrets.MAIL_PASS }}
-      MAIL_FROM:   ${{ secrets.MAIL_FROM }}
-      MAIL_TO:     ${{ secrets.MAIL_TO }}
-      SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
-      SMTP_PORT:   ${{ secrets.SMTP_PORT }}
-      # Use ALL to scan the whole market (your tase_sells.py supports this)
-      TASE_RSS_URLS: ${{ secrets.TASE_RSS_URLS }}
-      MIN_NIS: "0"
+  # reuse your existing US email secrets
+  MAIL_USER:     ${{ secrets.MAIL_USER }}
+  MAIL_PASS:     ${{ secrets.MAIL_PASS }}
+  MAIL_FROM:     ${{ secrets.MAIL_FROM }}
+  MAIL_TO:       ${{ secrets.MAIL_TO }}
+  SEC_EMAIL:     ${{ secrets.SEC_EMAIL }}
+
+  # SMTP (hardcoded defaults are fine for Gmail)
+  SMTP_SERVER:   smtp.gmail.com
+  SMTP_PORT:     587
+
+  # TASE feeds (we'll set this next)
+  TASE_RSS_URLS: ${{ secrets.TASE_RSS_URLS }}
+
+  # filters
+  MIN_NIS: "0"
 
     steps:
       - uses: actions/checkout@v4
