@@ -1,31 +1,31 @@
-name: TASE Sell Alerts (3× daily)
+name: TASE Sell Alerts (3x daily)
 
 on:
+  workflow_dispatch:
   schedule:
-    - cron: "45 7 * * *"   # 09:45 IL open (UTC+2)
-    - cron: "30 11 * * *"  # 13:30 IL mid
-    - cron: "35 15 * * *"  # 17:35 IL close
-  workflow_dispatch: {}
+    # GitHub cron is UTC. 09:45 / 13:30 / 17:35 Israel ≈ 07:45 / 11:30 / 15:35 UTC
+    - cron: "45 7 * * *"
+    - cron: "30 11 * * *"
+    - cron: "35 15 * * *"
 
 jobs:
   tase:
     runs-on: ubuntu-latest
-   env:
-  MAIL_USER:   ${{ secrets.MAIL_USER }}
-  MAIL_PASS:   ${{ secrets.MAIL_PASS }}
-  MAIL_FROM:   ${{ secrets.MAIL_FROM }}
-  MAIL_TO:     ${{ secrets.MAIL_TO }}
-  SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
-  SMTP_PORT:   ${{ secrets.SMTP_PORT }}
-  # keep the rest:
-  TASE_RSS_URLS: ${{ secrets.TASE_RSS_URLS }}
-  MIN_NIS: "0"
+    env:
+      MAIL_USER:   ${{ secrets.MAIL_USER }}
+      MAIL_PASS:   ${{ secrets.MAIL_PASS }}
+      MAIL_FROM:   ${{ secrets.MAIL_FROM }}
+      MAIL_TO:     ${{ secrets.MAIL_TO }}
+      SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+      SMTP_PORT:   ${{ secrets.SMTP_PORT }}
+      # Use ALL to scan the whole market (your tase_sells.py supports this)
+      TASE_RSS_URLS: ${{ secrets.TASE_RSS_URLS }}
+      MIN_NIS: "0"
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
@@ -35,8 +35,7 @@ jobs:
           pip install requests beautifulsoup4 lxml feedparser pandas python-dateutil
 
       - name: Run TASE scanner
-        run: |
-          python tase_sells.py
+        run: python tase_sells.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
