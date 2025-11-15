@@ -1,0 +1,225 @@
+name: Insider SELL Alerts (US – Scheduled)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # NOTE: GitHub cron uses **UTC**.
+    # Your requested US times 16:30, 19:00, 23:00 Asia/Jerusalem → 14:30, 17:00, 21:00 UTC (Mon–Fri)
+    - cron: "30 14 * * 1-5"
+    - cron: "0 17 * * 1-5"
+    - cron: "0 21 * * 1-5"
+
+permissions:
+  contents: read
+
+jobs:
+  us_sells:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 lxml python-dateutil
+
+      - name: Scan + email US insider SELLs
+        env:
+          # Reuse the secrets you already set
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_PASS: ${{ secrets.MAIL_PASS }}
+          MAIL_FROM: ${{ secrets.MAIL_FROM }}
+          MAIL_TO:   ${{ secrets.MAIL_TO }}
+          SEC_EMAIL: ${{ secrets.SEC_EMAIL }}
+          # Config
+          LOOKBACK_HOURS: "12"      # digest window per run
+          MIN_USD_SELL:   "100000"  # ignore sells below this
+        run: |
+          python - <<'PY'
+          import os, re, smtplib, ssl, time, math
+          from email.mime.text import MIMEText
+          from datetime import datetime, timedelta, timezone
+          import requests
+          from bs4 import BeautifulSoup
+          from dateutil import parser as dtp
+          from urllib.parse import urljoin
+
+          # -------- settings ----------
+          SEC_EMAIL = os.getenv("SEC_EMAIL") or os.getenv("MAIL_USER") or "you@example.com"
+          HEADERS = {
+              "User-Agent": f"InsiderWatch/1.0 ({SEC_EMAIL})",
+              "Accept-Encoding": "gzip, deflate",
+              "Connection": "keep-alive",
+          }
+          ATOM_FEED = "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=4&count=100&output=atom"
+          LOOKBACK_HOURS = int(os.getenv("LOOKBACK_HOURS","12"))
+          MIN_USD = float(os.getenv("MIN_USD_SELL","100000"))
+          EXCLUDE_PAT = re.compile(r'\b(LLC|LP|L\.P\.|Ltd|Fund|Capital|Partners|Holdings|Trust|Mgmt|Management)\b', re.I)
+
+          MAIL_USER = os.environ["MAIL_USER"]
+          MAIL_PASS = os.environ["MAIL_PASS"]
+          MAIL_FROM = os.environ.get("MAIL_FROM", MAIL_USER)
+          MAIL_TO   = os.environ.get("MAIL_TO", MAIL_USER)
+
+          def fetch(url, is_html=False, tries=3, sleep=1.2):
+              last = None
+              for i in range(tries):
+                  r = requests.get(url, headers=HEADERS, timeout=30)
+                  last = r
+                  if r.status_code == 200:
+                      return r.text if is_html else r.content
+                  time.sleep(sleep*(i+1))
+              raise RuntimeError(f"HTTP {last.status_code} for {url}")
+
+          def get_atom_entries():
+              html = fetch(ATOM_FEED, is_html=True)
+              soup = BeautifulSoup(html, "lxml-xml")
+              out = []
+              for e in soup.find_all("entry"):
+                  link = e.find("link")
+                  if not link or not link.get("href"): 
+                      continue
+                  updated = e.find("updated")
+                  out.append({
+                      "link": link.get("href"),
+                      "updated": updated.text if updated else None
+                  })
+              return out
+
+          def find_xml_candidates(index_url):
+              html = fetch(index_url, is_html=True)
+              cands = set()
+              # Common targets
+              for pat in [r'href="([^"]*ownership\.xml)"',
+                          r'href="([^"]*primary_doc\.xml)"',
+                          r'href="([^"]*\.txt)"']:
+                  for m in re.finditer(pat, html, flags=re.I):
+                      cands.add(urljoin(index_url, m.group(1)))
+              return list(cands)
+
+          def parse_form4_xml(xml_bytes):
+              soup = BeautifulSoup(xml_bytes, "lxml-xml")
+              sym = (soup.find("issuerTradingSymbol") or soup.find("issuerSymbol"))
+              symbol = (sym.text or "").strip() if sym else None
+
+              owners = []
+              for ro in soup.find_all("reportingOwner"):
+                  name = ro.find("rptOwnerName")
+                  if not name: 
+                      continue
+                  nm = (name.text or "").strip()
+                  if EXCLUDE_PAT.search(nm):  # filter funds/entities
+                      continue
+                  owners.append(nm)
+              owner = owners[0] if owners else None
+
+              sells = []
+              for tr in soup.find_all("nonDerivativeTransaction"):
+                  code = tr.find("transactionCode")
+                  code = (code.text or "").strip() if code else ""
+                  if code.upper() != "S": 
+                      continue
+                  sh = tr.find("transactionShares")
+                  pr = tr.find("transactionPricePerShare")
+                  dt = tr.find("transactionDate")
+                  shares = float((sh.value.text if (sh and sh.value) else "0") or 0)
+                  price  = float((pr.value.text if (pr and pr.value) else "0") or 0)
+                  amt = shares * price
+                  when = (dt.value.text if (dt and dt.value) else None)
+                  sells.append({
+                      "symbol": symbol,
+                      "owner": owner,
+                      "shares": shares,
+                      "price": price,
+                      "amount_usd": amt,
+                      "txn_date": when
+                  })
+              return sells
+
+          # -------- scan last N hours --------
+          since = datetime.now(timezone.utc) - timedelta(hours=LOOKBACK_HOURS)
+          entries = get_atom_entries()
+
+          hits = []
+          for ent in entries:
+              upd = ent.get("updated")
+              if upd:
+                  try:
+                      t = dtp.parse(upd)
+                      if t.tzinfo is None:
+                          t = t.replace(tzinfo=timezone.utc)
+                  except:
+                      t = None
+                  if t and t < since:
+                      continue
+              # try candidates
+              got = False
+              for cand in find_xml_candidates(ent["link"]):
+                  try:
+                      xml = fetch(cand)
+                  except Exception:
+                      continue
+                  sells = parse_form4_xml(xml)
+                  if sells:
+                      # attach filing & xml url to each
+                      for s in sells:
+                          s["filing_url"] = ent["link"]
+                          s["xml_url"] = cand
+                      hits.extend(sells)
+                      got = True
+                      break
+
+          # Group by symbol, sum amounts & count distinct owners
+          by_symbol = {}
+          for h in hits:
+              sym = h.get("symbol") or "UNKNOWN"
+              if sym not in by_symbol:
+                  by_symbol[sym] = {"total":0.0,"owners":set(),"rows":[]}
+              by_symbol[sym]["total"] += h["amount_usd"]
+              if h["owner"]: by_symbol[sym]["owners"].add(h["owner"])
+              by_symbol[sym]["rows"].append(h)
+
+          # Build digest lines
+          lines = []
+          for sym, agg in sorted(by_symbol.items(), key=lambda kv: -kv[1]["total"]):
+              if agg["total"] < MIN_USD:
+                  continue
+              owners_count = len(agg["owners"])
+              lines.append(f"{sym}: ${agg['total']:,.0f} across {owners_count} insider(s)")
+              # details
+              for r in agg["rows"]:
+                  if r["amount_usd"] <= 0: 
+                      continue
+                  o = r.get("owner") or "Unknown"
+                  lines.append(f"  - {o}: {int(r['shares']):,} @ ${r['price']:,.2f} = ${r['amount_usd']:,.0f}  (date: {r.get('txn_date')})")
+              # one index link
+              any_row = agg["rows"][0]
+              lines.append(f"  Filing: {any_row['filing_url']}")
+              lines.append("")
+
+          if not lines:
+              subject = "US Insider SELLs (last {}h): none".format(LOOKBACK_HOURS)
+              body = "No insider sells ≥ ${:,.0f} in the last {} hours.".format(MIN_USD, LOOKBACK_HOURS)
+          else:
+              subject = "US Insider SELLs (last {}h): {} ticker(s)".format(LOOKBACK_HOURS, sum(1 for _ in lines if _ and not _.startswith("  ")))
+              body = "Filters: only named people, sells >= ${:,.0f}\nWindow: last {} hours\n\n".format(MIN_USD, LOOKBACK_HOURS) + "\n".join(lines)
+
+          # send mail
+          msg = MIMEText(body, "plain", "utf-8")
+          msg["Subject"] = subject
+          msg["From"] = MAIL_FROM
+          msg["To"] = MAIL_TO
+
+          ctx = ssl.create_default_context()
+          with smtplib.SMTP("smtp.gmail.com", 587) as s:
+              s.starttls(context=ctx)
+              s.login(MAIL_USER, MAIL_PASS)
+              s.sendmail(MAIL_FROM, [MAIL_TO], msg.as_string())
+
+          print("Sent email:", subject)
+          PY
