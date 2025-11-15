@@ -10,16 +10,16 @@ on:
 jobs:
   tase:
     runs-on: ubuntu-latest
-    env:
-      FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
-      MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
-      MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
-      SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
-      SMTP_PORT:     ${{ secrets.SMTP_PORT }}
-      TO_EMAIL:      ${{ secrets.TO_EMAIL }}
-      # Optional: comma-separated MAYA RSS URLs. If empty, script exits cleanly.
-      TASE_RSS_URLS: ${{ secrets.TASE_RSS_URLS }}
-      MIN_NIS: "0"   # start with no floor; we can raise later
+   env:
+  MAIL_USER:   ${{ secrets.MAIL_USER }}
+  MAIL_PASS:   ${{ secrets.MAIL_PASS }}
+  MAIL_FROM:   ${{ secrets.MAIL_FROM }}
+  MAIL_TO:     ${{ secrets.MAIL_TO }}
+  SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+  SMTP_PORT:   ${{ secrets.SMTP_PORT }}
+  # keep the rest:
+  TASE_RSS_URLS: ${{ secrets.TASE_RSS_URLS }}
+  MIN_NIS: "0"
 
     steps:
       - uses: actions/checkout@v4
