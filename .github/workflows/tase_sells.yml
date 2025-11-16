@@ -1,12 +1,11 @@
-name: TASE Sell Alerts (3× daily)
+name: TASE Sell Alerts (3x daily)
 
 on:
+  workflow_dispatch:
   schedule:
-    # GitHub cron is UTC; IL 09:45/13:30/17:35 ≈ 07:45/11:30/15:35 UTC (no DST now)
-    - cron: "45 7 * * *"
-    - cron: "30 11 * * *"
-    - cron: "35 15 * * *"
-  workflow_dispatch: {}
+    - cron: '45 7 * * *'
+    - cron: '30 11 * * *'
+    - cron: '35 15 * * *'
 
 permissions:
   contents: read
@@ -20,29 +19,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
+      FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
       MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
       MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
-      SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
-      SMTP_PORT:     ${{ secrets.SMTP_PORT }}
-      TO_EMAIL:      ${{ secrets.TO_EMAIL }}
+      SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+      TO_EMAIL: ${{ secrets.TO_EMAIL }}
 
-      # Leave blank to auto-scan (Mode B). To parse specific reports (Mode A),
-      # paste one or more Maya links separated by spaces/newlines:
-      # e.g. "https://maya.tase.co.il/he/reports/1702640 https://mayafiles.tase.co.il/rhtm/1702001-1703000/H1702656.htm"
       TASE_LINKS: ""
-
-      # Scan controls (used when TASE_LINKS is empty)
-      TASE_LAST_ID: "1702000"       # starting print-page id seed (one-time; state is saved)
-      TASE_SCAN_AHEAD: "400"        # how many ids to probe per run
-      TASE_SLEEP: "1.0"             # politeness delay between fetches (seconds)
+      TASE_LAST_ID: "1702000"
+      TASE_SCAN_AHEAD: "400"
+      TASE_SLEEP: "1.0"
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
 
       - name: Install deps
         run: |
