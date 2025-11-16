@@ -1,33 +1,41 @@
-name: TASE Sell Alerts (3x daily)
+name: TASE Sell Alerts (3× daily)
 
 on:
-  workflow_dispatch:
   schedule:
-    # GitHub cron is UTC. 09:45 / 13:30 / 17:35 Israel ≈ 07:45 / 11:30 / 15:35 UTC
+    # GitHub cron is UTC; IL 09:45/13:30/17:35 ≈ 07:45/11:30/15:35 UTC (no DST now)
     - cron: "45 7 * * *"
     - cron: "30 11 * * *"
     - cron: "35 15 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tase-sells
+  cancel-in-progress: true
 
 jobs:
   tase:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
-  # reuse your existing US email secrets
-  MAIL_USER:     ${{ secrets.MAIL_USER }}
-  MAIL_PASS:     ${{ secrets.MAIL_PASS }}
-  MAIL_FROM:     ${{ secrets.MAIL_FROM }}
-  MAIL_TO:       ${{ secrets.MAIL_TO }}
-  SEC_EMAIL:     ${{ secrets.SEC_EMAIL }}
+      FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
+      MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+      MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+      SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
+      SMTP_PORT:     ${{ secrets.SMTP_PORT }}
+      TO_EMAIL:      ${{ secrets.TO_EMAIL }}
 
-  # SMTP (hardcoded defaults are fine for Gmail)
-  SMTP_SERVER:   smtp.gmail.com
-  SMTP_PORT:     587
+      # Leave blank to auto-scan (Mode B). To parse specific reports (Mode A),
+      # paste one or more Maya links separated by spaces/newlines:
+      # e.g. "https://maya.tase.co.il/he/reports/1702640 https://mayafiles.tase.co.il/rhtm/1702001-1703000/H1702656.htm"
+      TASE_LINKS: ""
 
-  # TASE feeds (we'll set this next)
-  TASE_RSS_URLS: ${{ secrets.TASE_RSS_URLS }}
-
-  # filters
-  MIN_NIS: "0"
+      # Scan controls (used when TASE_LINKS is empty)
+      TASE_LAST_ID: "1702000"     # starting print-page id seed (one-time; state is saved)
+      TASE_SCAN_AHEAD: "400"      # how many ids to probe per run
+      TASE_SLEEP: "1.0"           # politeness delay between fetches (seconds)
 
     steps:
       - uses: actions/checkout@v4
@@ -39,17 +47,17 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 lxml feedparser pandas python-dateutil
+          pip install requests beautifulsoup4 lxml pdfminer.six
 
       - name: Run TASE scanner
-        run: python tase_sells.py
+        run: python scripts/tase_scan.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: tase_outputs
           path: |
-            tase_alerts.csv
             tase_trades.csv
-            tase.log
+            tase_alerts.csv
+            .tase_state.txt
           if-no-files-found: ignore
