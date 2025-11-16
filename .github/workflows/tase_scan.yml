@@ -1,0 +1,57 @@
+name: TASE — Scan & Email
+
+on:
+  workflow_dispatch:
+  # Times are in **UTC**. IL (Asia/Jerusalem, UTC+2 now) open/mid/close → 07:45, 11:30, 15:35 UTC (Sun–Thu)
+  schedule:
+    - cron: "45 7 * * 0-4"
+    - cron: "30 11 * * 0-4"
+    - cron: "35 15 * * 0-4"
+
+permissions:
+  contents: read
+
+jobs:
+  tase_scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 lxml pdfminer.six pandas python-dateutil
+
+      - name: Scan TASE + email digest
+        env:
+          FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
+          MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+          MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+          SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT:     ${{ secrets.SMTP_PORT }}
+          TO_EMAIL:      ${{ secrets.TO_EMAIL }}
+          # Mode A (links) — if you set TASE_LINKS secret (one URL per line), we’ll parse those.
+          # If blank, we auto-probe new print pages (Mode B) using the state below.
+          TASE_LINKS:    ${{ secrets.TASE_LINKS }}
+          # Mode B (auto): starting id + how many to probe per run (optional; safe defaults)
+          TASE_LAST_ID:  ${{ secrets.TASE_LAST_ID }}
+          TASE_SCAN_AHEAD: "600"
+          TASE_SLEEP: "0.8"
+        run: |
+          python scripts/tase_scan.py
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tase_outputs
+          path: |
+            tase_alerts.csv
+            tase_trades.csv
+            .tase_state.txt
+          if-no-files-found: warn
