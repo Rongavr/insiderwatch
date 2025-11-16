@@ -33,9 +33,9 @@ jobs:
       TASE_LINKS: ""
 
       # Scan controls (used when TASE_LINKS is empty)
-      TASE_LAST_ID: "1702000"     # starting print-page id seed (one-time; state is saved)
-      TASE_SCAN_AHEAD: "400"      # how many ids to probe per run
-      TASE_SLEEP: "1.0"           # politeness delay between fetches (seconds)
+      TASE_LAST_ID: "1702000"       # starting print-page id seed (one-time; state is saved)
+      TASE_SCAN_AHEAD: "400"        # how many ids to probe per run
+      TASE_SLEEP: "1.0"             # politeness delay between fetches (seconds)
 
     steps:
       - uses: actions/checkout@v4
@@ -44,7 +44,7 @@ jobs:
         with:
           python-version: "3.12"
 
-        - name: Install deps
+      - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 lxml pandas python-dateutil pdfminer.six
