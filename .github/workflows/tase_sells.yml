@@ -3,6 +3,7 @@ name: TASE Sell Alerts (3x daily)
 on:
   workflow_dispatch:
   schedule:
+    # GitHub cron is UTC; IL ≈ 09:45 / 13:30 / 17:35 → 07:45 / 11:30 / 15:35 UTC
     - cron: '45 7 * * *'
     - cron: '30 11 * * *'
     - cron: '35 15 * * *'
@@ -19,16 +20,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      FROM_EMAIL: ${{ secrets.FROM_EMAIL }}
+      FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
       MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
       MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
-      SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
-      SMTP_PORT: ${{ secrets.SMTP_PORT }}
-      TO_EMAIL: ${{ secrets.TO_EMAIL }}
+      SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
+      SMTP_PORT:     ${{ secrets.SMTP_PORT }}
+      TO_EMAIL:      ${{ secrets.TO_EMAIL }}
 
-      TASE_LINKS: ""
-      TASE_LAST_ID: "1702000"
-      TASE_SCAN_AHEAD: "400"
+      # TEMP: verify parser with two known report pages; then set to "" for auto-scan
+      TASE_LINKS: "https://mayafiles.tase.co.il/rhtm/1702001-1703000/H1702656.htm https://mayafiles.tase.co.il/rhtm/1702001-1703000/H1702640.htm"
+
+      # Auto-scan controls (used when TASE_LINKS is "")
+      TASE_LAST_ID: "1702600"
+      TASE_SCAN_AHEAD: "1200"
       TASE_SLEEP: "1.0"
 
     steps:
