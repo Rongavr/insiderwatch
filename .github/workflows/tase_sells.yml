@@ -28,7 +28,7 @@ jobs:
       TO_EMAIL:      ${{ secrets.TO_EMAIL }}
 
       # TEST MODE: parse two known reports to confirm the pipeline
-      TASE_LINKS: "https://mayafiles.tase.co.il/rhtm/1702001-1703000/H1702656.htm https://mayafiles.tase.co.il/rhtm/1702001-1703000/H1702640.htm"
+      TASE_LINKS: ""
 
       # Do not filter (show everything) while testing
       MIN_NIS: "0"
