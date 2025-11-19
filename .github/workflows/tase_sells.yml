@@ -32,12 +32,12 @@ jobs:
       TASE_LINKS: ""
 
       # Scan window (tuned to finish < ~10m). The script updates .tase_state.txt as it advances.
-      TASE_LAST_ID:   "1702700"   # one-time seed; real starting point comes from .tase_state.txt if present
-      TASE_SCAN_AHEAD:"800"       # ~800 ids per run
-      TASE_SLEEP:     "0.60"      # 0.6s politeness delay
+      TASE_LAST_ID:    "1702700"  # one-time seed; real start comes from .tase_state.txt if present
+      TASE_SCAN_AHEAD: "600"      # probe up to 600 IDs per run
+      TASE_SLEEP:      "0.60"     # politeness delay (seconds)
 
       # Optional: minimum total NIS to alert (0 = show all)
-      MIN_NIS:        "0"
+      MIN_NIS:         "0"
 
     steps:
       - name: Checkout repo
@@ -74,7 +74,6 @@ jobs:
           if-no-files-found: warn
 
       - name: Commit updated scan state
-        # If GitHub has a transient push issue, don't fail the whole job.
         continue-on-error: true
         if: always()
         uses: stefanzweifel/git-auto-commit-action@v5
