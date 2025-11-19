@@ -1,11 +1,11 @@
 name: TASE Sell Alerts (2x daily)
-
+run-name: "TASE (2x daily) — ${{ github.event_name }}"
 on:
   workflow_dispatch:
   schedule:
-    # UTC times → IL ≈ +2 (no DST now): 07:45 & 15:35 UTC ≈ 09:45 & 17:35 IL
     - cron: '45 7 * * *'
     - cron: '35 15 * * *'
+
 
 permissions:
   contents: read
