@@ -3,10 +3,9 @@ name: Insider SELL Alerts (US – Scheduled)
 on:
   workflow_dispatch:
   schedule:
-    # GitHub cron is UTC; Asia/Jerusalem 16:30, 19:00, 23:00 → 14:30, 17:00, 21:00 UTC (Mon–Fri)
-    - cron: "30 14 * * 1-5"
-    - cron: "0 17 * * 1-5"
-    - cron: "0 21 * * 1-5"
+    - cron: "30 14 * * 1-5"  # 16:30 IL
+    - cron: "0 21 * * 1-5"   # 23:00 IL
+
 
 permissions:
   contents: read
