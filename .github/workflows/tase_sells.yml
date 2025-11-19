@@ -3,10 +3,9 @@ name: TASE Sell Alerts (2x daily)
 on:
   workflow_dispatch:
   schedule:
-    # UTC times → IL ≈ +2 in winter
-    # Run near open and after close: 07:55Z (09:55 IL) and 15:45Z (17:45 IL)
-    - cron: '55 7 * * 1-5'
-    - cron: '45 15 * * 1-5'
+    # UTC times → IL ≈ +2 (no DST now): 07:45 & 15:35 UTC ≈ 09:45 & 17:35 IL
+    - cron: '45 7 * * *'
+    - cron: '35 15 * * *'
 
 permissions:
   contents: read
@@ -18,7 +17,7 @@ concurrency:
 jobs:
   tase:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     env:
       FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
       MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
@@ -27,16 +26,16 @@ jobs:
       SMTP_PORT:     ${{ secrets.SMTP_PORT }}
       TO_EMAIL:      ${{ secrets.TO_EMAIL }}
 
-      # Leave empty for auto-scan (normal mode)
+      # --- SCAN MODE (default): leave empty to auto-scan new reports each run ---
       TASE_LINKS: ""
 
-      # Scan window + throttle (keep under 12m)
-      TASE_LAST_ID:    "1702600"
-      TASE_SCAN_AHEAD: "900"
-      TASE_SLEEP:      "0.7"
+      # Scan window tuning (keep runtime < ~10m)
+      TASE_LAST_ID:   "1702700"   # seed; script will keep updating .tase_state.txt
+      TASE_SCAN_AHEAD:"400"       # probe up to 400 IDs per run (≈ a few minutes)
+      TASE_SLEEP:     "0.5"       # be polite but faster than 1.0 s between fetches
 
-      # Show everything while testing (you can raise later)
-      MIN_NIS: "0"
+      # Optional: filter alerts by minimum shekel value (0 = show all)
+      MIN_NIS:        "0"
 
     steps:
       - uses: actions/checkout@v4
