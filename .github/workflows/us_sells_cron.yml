@@ -3,8 +3,10 @@ name: Insider SELL Alerts (US – Scheduled)
 on:
   workflow_dispatch:
   schedule:
-    - cron: "30 14 * * 1-5"  # 16:30 IL
-    - cron: "0 21 * * 1-5"   # 23:00 IL
+    # UTC → US/Eastern (ET = UTC-5 now)
+    - cron: '45 14 * * 1-5'  # 09:45 ET (pre/just after open)
+    - cron: '15 21 * * 1-5'  # 16:15 ET (post-close)
+
 
 
 permissions:
