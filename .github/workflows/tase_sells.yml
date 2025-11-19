@@ -3,9 +3,10 @@ name: TASE Sell Alerts (2x daily)
 on:
   workflow_dispatch:
   schedule:
-    # UTC; Israel ≈ UTC+2 (no DST now)
-    - cron: '45 7 * * 1-5'   # 09:45 IL
-    - cron: '35 15 * * 1-5'  # 17:35 IL
+    # UTC times → IL ≈ +2 in winter
+    # Run near open and after close: 07:55Z (09:55 IL) and 15:45Z (17:45 IL)
+    - cron: '55 7 * * 1-5'
+    - cron: '45 15 * * 1-5'
 
 permissions:
   contents: read
@@ -17,7 +18,7 @@ concurrency:
 jobs:
   tase:
     runs-on: ubuntu-latest
-    timeout-minutes: 25         # give headroom so it won't cancel
+    timeout-minutes: 12
     env:
       FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
       MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
@@ -26,14 +27,16 @@ jobs:
       SMTP_PORT:     ${{ secrets.SMTP_PORT }}
       TO_EMAIL:      ${{ secrets.TO_EMAIL }}
 
-      # Leave empty for auto-scan (script continues from .tase_state.txt)
+      # Leave empty for auto-scan (normal mode)
       TASE_LINKS: ""
 
-      # Keep each run short to avoid timeouts
-      TASE_LAST_ID:    "1702600"   # one-time seed (ignored after state file exists)
-      TASE_SCAN_AHEAD: "160"       # was 300/400 → tighter so it finishes fast
-      TASE_SLEEP:      "0.8"       # politeness delay (sec)
-      MIN_NIS:         "0"         # no filter while testing
+      # Scan window + throttle (keep under 12m)
+      TASE_LAST_ID:    "1702600"
+      TASE_SCAN_AHEAD: "900"
+      TASE_SLEEP:      "0.7"
+
+      # Show everything while testing (you can raise later)
+      MIN_NIS: "0"
 
     steps:
       - uses: actions/checkout@v4
@@ -41,7 +44,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip'            # speeds up installs
 
       - name: Install deps
         run: |
