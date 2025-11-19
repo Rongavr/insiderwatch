@@ -1,10 +1,9 @@
-name: TASE Sell Alerts (3x daily)
+name: TASE Sell Alerts (2x daily)
 
 on:
   workflow_dispatch:
   schedule:
-    # GitHub cron is UTC; IL ≈ 09:45 / 13:30 / 17:35 → 07:45 / 11:30 / 15:35 UTC
-    - cron: '45 7 * * *'
+    # UTC times → 11:30 & 15:35 UTC (≈ 13:30 & 17:35 IL now)
     - cron: '30 11 * * *'
     - cron: '35 15 * * *'
 
@@ -18,7 +17,7 @@ concurrency:
 jobs:
   tase:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     env:
       FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
       MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
@@ -27,16 +26,14 @@ jobs:
       SMTP_PORT:     ${{ secrets.SMTP_PORT }}
       TO_EMAIL:      ${{ secrets.TO_EMAIL }}
 
-      # TEST MODE: parse two known reports to confirm the pipeline
+      # Auto-scan (leave empty to use saved .tase_state.txt each run)
       TASE_LINKS: ""
 
-      # Do not filter (show everything) while testing
-      MIN_NIS: "0"
-
-      # Auto-scan controls (used only when TASE_LINKS is "")
-      TASE_LAST_ID: "1702600"
-      TASE_SCAN_AHEAD: "1200"
-      TASE_SLEEP: "1.0"
+      # Scan window tuning (keeps runtime ~2–4 minutes)
+      TASE_LAST_ID:   "1703000"   # seed; real state persists in .tase_state.txt
+      TASE_SCAN_AHEAD:"250"       # was 1200 → too slow
+      TASE_SLEEP:     "0.7"       # politeness delay in seconds
+      MIN_NIS:        "0"
 
     steps:
       - uses: actions/checkout@v4
