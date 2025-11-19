@@ -3,11 +3,59 @@ name: TASE Sell Alerts (2x daily)
 on:
   workflow_dispatch:
   schedule:
-    - cron: '45 7 * * 1-5'
-    - cron: '35 15 * * 1-5'
+    # UTC; Israel ≈ UTC+2 (no DST now)
+    - cron: '45 7 * * 1-5'   # 09:45 IL (after open)
+    - cron: '35 15 * * 1-5'  # 17:35 IL (after close)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tase-sells
+  cancel-in-progress: true
 
 jobs:
-  ping:
+  tase:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
+      MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+      MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+      SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
+      SMTP_PORT:     ${{ secrets.SMTP_PORT }}
+      TO_EMAIL:      ${{ secrets.TO_EMAIL }}
+
+      # Leave empty to auto-scan (Mode B). For one-off tests, paste space-separated Maya links.
+      TASE_LINKS: ""
+
+      # Auto-scan controls (used when TASE_LINKS == "")
+      TASE_LAST_ID:    "1702600"   # one-time seed; state saves to .tase_state.txt
+      TASE_SCAN_AHEAD: "300"       # keep modest to prevent timeouts
+      TASE_SLEEP:      "0.8"       # politeness delay in seconds
+      MIN_NIS:         "0"         # show all while testing
+
     steps:
-      - run: echo "workflow is valid"
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 lxml pandas python-dateutil pdfminer.six
+
+      - name: Run TASE scanner
+        run: python scripts/tase_scan.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tase_outputs
+          path: |
+            tase_trades.csv
+            tase_alerts.csv
+            .tase_state.txt
+          if-no-files-found: ignore
