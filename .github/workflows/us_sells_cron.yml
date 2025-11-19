@@ -3,58 +3,38 @@ name: Insider SELL Alerts (US – Scheduled)
 on:
   workflow_dispatch:
   schedule:
-    # UTC → US/Eastern (ET = UTC-5 now)
-    - cron: '45 14 * * 1-5'  # 09:45 ET (pre/just after open)
-    - cron: '15 21 * * 1-5'  # 16:15 ET (post-close)
-
-
+    # Twice daily: 09:45 ET and 16:15 ET (ET is UTC-5 now)
+    - cron: '45 14 * * 1-5'
+    - cron: '15 21 * * 1-5'
 
 permissions:
   contents: read
 
+concurrency:
+  group: us-sells
+  cancel-in-progress: true
+
 jobs:
   us_sells:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-
+          python-version: '3.12'
+          cache: 'pip'
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install requests beautifulsoup4 lxml python-dateutil pandas urllib3
-
-      - name: Run US SELL digest
-        env:
-          # map your existing secrets to what the script expects
-          MAIL_USERNAME: ${{ secrets.MAIL_USER }}
-          MAIL_PASSWORD: ${{ secrets.MAIL_PASS }}
-          FROM_EMAIL:    ${{ secrets.MAIL_FROM }}
-          TO_EMAIL:      ${{ secrets.MAIL_TO }}
-          SEC_EMAIL:     ${{ secrets.SEC_EMAIL }}
-
-          # script knobs (safe defaults; tweak later if needed)
-          LOOKBACK_HOURS: "12"         # per-run window
-          MIN_USD:        "100000"     # ignore sells below this
-          EXCLUDE_10B5:   "1"          # exclude 10b5-1 planned trades
-          EXCLUDE_COVER:  "1"          # exclude sell-to-cover on option exercise
-          PEOPLE_ONLY:    "1"          # ignore LLC/LP/Funds etc
-
-          # throttle to avoid SEC 429s
-          SEC_THROTTLE_MS: "1500"      # try 2000 if you still see 429s
-          SEC_MAX_RETRIES: "6"
-        run: |
-          python scripts/sell_alerts.py
-
-      - name: Upload artifacts (CSV)
-        if: always()
+          pip install requests pandas python-dateutil lxml beautifulsoup4
+      - name: Run US scanner
+        run: python scripts/sell_alerts_us.py
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: insider_sell_outputs
           path: |
             alerts.csv
             insider_trades.csv
+          if-no-files-found: ignore
