@@ -3,9 +3,9 @@ name: Insider SELL Alerts (US – Scheduled)
 on:
   workflow_dispatch:
   schedule:
-    # Twice daily: 09:45 ET and 16:15 ET (ET is UTC-5 now)
-    - cron: '45 14 * * 1-5'
-    - cron: '15 21 * * 1-5'
+    # Twice daily around US midday and after close (Mon–Fri)
+    - cron: '40 15 * * 1-5'   # ~10:40 ET
+    - cron: '10 21 * * 1-5'   # ~16:10 ET
 
 permissions:
   contents: read
@@ -17,19 +17,37 @@ concurrency:
 jobs:
   us_sells:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 8
+    env:
+      FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
+      MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+      MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+      SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
+      SMTP_PORT:     ${{ secrets.SMTP_PORT }}
+      TO_EMAIL:      ${{ secrets.TO_EMAIL }}
+
+      # SEC Atom feed (can be a comma/space/newline-separated list if you add more)
+      EDGAR_ATOM_URLS: "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=4&count=100&output=atom"
+
+      # Don’t filter while testing
+      MIN_USD: "0"
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip'
+
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install requests pandas python-dateutil lxml beautifulsoup4
-      - name: Run US scanner
-        run: python scripts/sell_alerts_us.py
+          pip install requests pandas feedparser lxml beautifulsoup4 python-dateutil
+
+      # Keep the call simple — your script reads envs and writes CSVs.
+      - name: Run US insider scan
+        run: python insider_scanner.py
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
