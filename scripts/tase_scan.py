@@ -1,272 +1,259 @@
-# scripts/tase_scan.py
-# TASE scanner that accepts:
-#  - TASE_LINKS: space/newline-separated list of MAYA pages (.htm wrapper OR company report page) or direct .pdf
-#  - If TASE_LINKS is "", auto-scan print-page ids starting from TASE_LAST_ID (state saved in .tase_state.txt)
-#
-# Outputs:
-#   tase_trades.csv  (one row per parsed sell)
-#   tase_alerts.csv  (grouped digest by company/code)
-#
-# Emails are handled by the workflow's mail step (already set up).
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-import os, re, sys, time
-from io import BytesIO
-from urllib.parse import urljoin
-from datetime import datetime, timezone
+import os, re, time, csv, sys
 import requests
-from bs4 import BeautifulSoup
-import pandas as pd
-from pdfminer.high_level import extract_text
+from datetime import datetime, timezone
 
-UA = "TaseSellScanner/1.0 (+github actions)"
-HEADERS = {"User-Agent": UA, "Accept-Encoding": "gzip, deflate", "Connection": "keep-alive"}
+# ------------ HTTP session ------------
+UA = os.getenv('TASE_USER_AGENT', 'insiderwatch-bot/1.0 (+github actions)')
+SESSION = requests.Session()
+SESSION.headers.update({'User-Agent': UA})
+TIMEOUT = float(os.getenv('TASE_TIMEOUT_PER_FETCH', '12'))
 
-# ---------- helpers ----------
-def fetch(url, binary=False, tries=3, sleep=1.2):
-    last = None
-    for i in range(tries):
-        r = requests.get(url, headers=HEADERS, timeout=30)
-        last = r
-        if r.status_code == 200:
-            return r.content if binary else r.text
-        time.sleep(sleep * (i+1))
-    raise RuntimeError(f"HTTP {last.status_code} for {url}")
+def now_iso():
+    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
-PDF_HINT_PAT = re.compile(r'(?i)\.pdf(?:[#?\s"\']|$)')
-MAYAFILES_BASE = "https://mayafiles.tase.co.il/"
+def bucket_url_for(hid: int) -> str:
+    # Example: H1702640 -> /rhtm/1702001-1703000/H1702640.htm
+    start = (hid // 1000) * 1000 + 1
+    end   = start + 999
+    return f"https://mayafiles.tase.co.il/rhtm/{start}-{end}/H{hid}.htm"
 
-def find_pdf_from_html_page(url, html):
-    # Common places the PDF lives inside MAYA wrapper pages
-    # 1) <a href="...pdf">, <embed src="...pdf">, <iframe src="...pdf">
-    soup = BeautifulSoup(html, "lxml")
-    # All attributes that can carry the pdf link
-    cand_attrs = []
-    for tag in soup.find_all(["a", "embed", "iframe"]):
-        for attr in ["href", "src"]:
-            v = tag.get(attr)
-            if v and PDF_HINT_PAT.search(v):
-                cand_attrs.append(v)
-    # Fallback: search in raw html
-    if not cand_attrs:
-        for m in re.finditer(r'href=["\']([^"\']+?\.pdf[^"\']*)["\']', html, flags=re.I):
-            cand_attrs.append(m.group(1))
-    # Normalize & prefer mayafiles
-    cands = []
-    for c in cand_attrs:
-        cands.append(urljoin(url, c))
-    # Deduplicate, keep mayafiles first
-    seen, ordered = set(), []
-    for c in sorted(cands, key=lambda u: (not u.startswith(MAYAFILES_BASE), len(u))):
-        if c not in seen:
-            seen.add(c); ordered.append(c)
-    return ordered[0] if ordered else None
+def maya_to_print_url(link: str):
+    # Accept either maya.tase.co.il/.../reports/1702640 or direct print Hxxxxx.htm
+    m = re.search(r'/reports/(\d+)', link)
+    if m:
+        hid = int(m.group(1))
+        return bucket_url_for(hid), hid
+    m2 = re.search(r'/H(\d+)\.htm', link)
+    if m2:
+        hid = int(m2.group(1))
+        return link, hid
+    return link, None
 
-def resolve_to_pdf(url):
-    """Accepts:
-        - company report page like https://maya.tase.co.il/he/reports/1702640
-        - mayafiles wrapper like  .../H1702656.htm
-        - direct .pdf
-       Returns (pdf_url, pdf_bytes)
-    """
-    if PDF_HINT_PAT.search(url):
-        return url, fetch(url, binary=True)
+def exists(url: str) -> bool:
+    try:
+        r = SESSION.head(url, allow_redirects=True, timeout=TIMEOUT)
+        return r.status_code == 200
+    except Exception:
+        return False
 
-    # HTML wrapper
-    html = fetch(url, binary=False)
-    pdf_url = find_pdf_from_html_page(url, html)
-    if not pdf_url:
-        # Some company pages use attachmentType=pdf links
-        # Try to synthesize if we see attachmentType in the html
-        m = re.search(r'(https?://[^\s"\']+?attachmentType=pdf[^\s"\']*)', html, flags=re.I)
-        if m:
-            pdf_url = m.group(1)
-    if not pdf_url:
-        raise RuntimeError(f"Could not find a PDF link inside: {url}")
-    return pdf_url, fetch(pdf_url, binary=True)
+def fetch(url: str) -> str:
+    r = SESSION.get(url, timeout=TIMEOUT)
+    r.raise_for_status()
+    r.encoding = r.apparent_encoding
+    return r.text
 
-HEB_DIGITS = re.compile(r'[\d,]+')
-def _to_int(s):
-    if not s: return None
-    s = s.replace(',', '').strip()
-    if not s: return None
-    try: return int(s)
-    except: 
-        # negative like "23,571 -" or "-23,571"
-        s = s.replace(' -', '').replace('-', '')
-        try: return int(s)
-        except: return None
-
-def _to_float(s):
-    if not s: return None
-    s = s.replace(',', '').strip()
-    try: return float(s)
+# ------------ Parsing helpers ------------
+def _to_int(s: str):
+    if s is None: return None
+    try: return int(s.replace(',', '').strip())
     except: return None
 
-def parse_pdf(pdf_bytes, src_url, pdf_url):
-    """Return list of trade dicts for sells found in the PDF."""
-    text = extract_text(BytesIO(pdf_bytes)) or ""
-    # Normalize spaces
-    t = re.sub(r'[ \t]+', ' ', text)
-    # Company (try a few hints)
-    company = None
-    for pat in [
-        r'שם מקוצר:\s*([^\n]+)',
-        r'שם תאגיד/שם משפחה.*?:\s*([^\n]+)',
-        r'\n([א-ת].{2,40}בע"מ)\n',
-    ]:
-        m = re.search(pat, t)
-        if m:
-            company = m.group(1).strip()
-            break
+def _to_float(s: str):
+    if s is None: return None
+    try: return float(s.replace(',', '').strip())
+    except: return None
 
-    # TASE code
-    tase_code = None
-    for pat in [
-        r'מספר נייר ערך בבורסה[:\s]+(\d+)',
-        r'מספר ני"?ע בבורסה[:\s]+(\d+)',
-    ]:
-        m = re.search(pat, t)
-        if m:
-            tase_code = m.group(1)
-            break
+def _extract_company(text: str) -> str:
+    # Heuristic: company usually appears just before "מספר ברשם"
+    lines = [ln.strip() for ln in text.splitlines()]
+    for i, ln in enumerate(lines[:80]):
+        if 'מספר ברשם' in ln:
+            for j in range(i-1, max(-1, i-6), -1):
+                if lines[j]:
+                    return lines[j]
+    # Fallback: scan first non-empty line
+    for ln in lines:
+        if ln: return ln
+    return ''
 
-    # Change date
-    when = None
-    m = re.search(r'תאריך השינוי[:\s]+(\d{2}/\d{2}/\d{4})', t)
-    if m: when = m.group(1)
+def parse_report(text: str, url: str, hid: int | None):
+    # Look for insider/interest keywords
+    keywords = [
+        'שינויים בהחזקות בעלי עניין',
+        'שינוי החזקות בעלי עניין',
+        'החזקות בעלי עניין/נושאי משרה',
+        'החל להיות בעל ענין',
+        'חדל להיות בעל ענין',
+    ]
+    if not any(k in text for k in keywords):
+        return None
 
-    # Detect SELL: look for קיטון + מכירה anywhere
-    is_sell = ('קיטון' in t) and (('מכירה' in t) or ('מכר' in t))
-    if not is_sell:
-        return []  # ignore non-sells (e.g., “חדל להיות בעל עניין”)
+    company = _extract_company(text)
+    m_code = re.search(r'מספר נייר ערך בבורסה[:\s]+(\d{6,7})', text)
+    tase_code = m_code.group(1) if m_code else ''
 
-    # Shares change (negative)
-    shares_sold = None
-    m = re.search(r'שינוי בכמות ניירות הערך[:\s]+([-\d, ]+)', t)
-    if m:
-        shares_sold = _to_int(m.group(1))
-        if shares_sold is not None:
-            shares_sold = abs(shares_sold)
+    # Quantity change (may be negative)
+    m_qty = re.search(r'שינוי בכמות נייר(?:ות)? הערך[:\s]+([-\d,]+)', text)
+    qty = _to_int(m_qty.group(1)) if m_qty else None
 
-    # Price + unit
+    # Price
     price_nis = None
-    unit = ''
-    m = re.search(r'שער העסקה[:\s]+([\d\.,]+)\s*(?:מטבע\s*([^\s\n]+))?', t)
-    if m:
-        raw_price = _to_float(m.group(1))
-        unit = (m.group(2) or '').strip()
-        if raw_price is not None:
-            # If unit mentions אג (agorot), convert to NIS
-            if 'אג' in unit:
-                price_nis = raw_price / 100.0
-            else:
-                price_nis = raw_price
+    m_px = re.search(r'שער העסקה[:\s]+([\d,]+(?:\.\d+)?)\s*(אג\'|ש"ח|ש”ח|ש׳׳ח|שח)?', text)
+    if m_px:
+        p = _to_float(m_px.group(1))
+        unit = (m_px.group(2) or '').strip()
+        if p is not None:
+            price_nis = p * 0.01 if unit.startswith('אג') else p
 
-    est_total_nis = None
-    if shares_sold and price_nis:
-        est_total_nis = round(shares_sold * price_nis, 2)
+    est = None
+    if qty is not None and price_nis is not None:
+        est = abs(qty) * price_nis
 
-    # Owner (optional)
-    owner = None
-    for pat in [
-        r'שם תאגיד/שם משפחה ושם פרטי של המחזיק[:\s]+([^\n]+)',
-        r'שם.*?פרטי[:\s]+([^\n]+)',
-    ]:
-        m = re.search(pat, t)
-        if m:
-            owner = m.group(1).strip()
-            break
+    # Change date (optional)
+    date_iso = ''
+    m_dt = re.search(r'תאריך השינוי[:\s]+(\d{2}/\d{2}/\d{4})', text)
+    if m_dt:
+        dd, mm, yyyy = m_dt.group(1).split('/')
+        date_iso = f'{yyyy}-{mm}-{dd}'
 
-    return [{
-        "company": company or "",
-        "tase_code": tase_code or "",
-        "action": "SELL",
-        "owner": owner or "",
-        "shares": shares_sold or "",
-        "price_nis": price_nis or "",
-        "est_total_nis": est_total_nis or "",
-        "when": when or "",
-        "source_url": src_url,
-        "pdf_url": pdf_url,
-    }]
+    direction = ''
+    if qty is not None:
+        direction = 'SELL' if qty < 0 else 'BUY'
 
-def save_csv(trades, alerts_path="tase_alerts.csv", trades_path="tase_trades.csv"):
-    df = pd.DataFrame(trades)
-    if df.empty:
-        # still write headers so you can see it's “empty”
-        pd.DataFrame(columns=["company","tase_code","trades","est_total_nis","when"]).to_csv(alerts_path, index=False)
-        pd.DataFrame(columns=["company","tase_code","action","owner","shares","price_nis","est_total_nis","when","source_url","pdf_url"]).to_csv(trades_path, index=False)
-        return
-    # write trades
-    df.to_csv(trades_path, index=False, encoding="utf-8-sig")
-    # aggregate (sum total by company+code)
-    when = df["when"].dropna().iloc[0] if "when" in df.columns and not df["when"].dropna().empty else ""
-    agg = (df.groupby(["company","tase_code"], dropna=False)["est_total_nis"].sum().reset_index())
-    agg["trades"] = df.groupby(["company","tase_code"], dropna=False).size().values
-    agg["when"] = when
-    agg = agg[["company","tase_code","trades","est_total_nis","when"]]
-    agg.to_csv(alerts_path, index=False, encoding="utf-8-sig")
+    return {
+        'report_id': str(hid) if hid else '',
+        'company': company,
+        'tase_code': tase_code,
+        'qty_change': qty if qty is not None else '',
+        'price_nis': f'{price_nis:.4f}' if price_nis is not None else '',
+        'est_total_nis': f'{est:.2f}' if est is not None else '',
+        'direction': direction,
+        'date': date_iso,
+        'link': url
+    }
 
-def auto_scan_mode():
-    # Probe print-page ids: …/rhtm/1702001-1703000/H<ID>.htm, follow pdf, parse
-    seed_env = os.getenv("TASE_LAST_ID", "").strip()
+def write_csv(path: str, rows: list[dict], header: list[str]):
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        w = csv.DictWriter(f, fieldnames=header)
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+
+# ------------ State ------------
+def load_state() -> int:
+    if not os.path.exists('.tase_state.txt'):
+        seed = os.getenv('TASE_LAST_ID', '1702000')
+        try: return int(seed)
+        except: return 1702000
     try:
-        last_id = int(seed_env) if seed_env else 1702000
-    except:
-        last_id = 1702000
-    ahead = int(os.getenv("TASE_SCAN_AHEAD","400"))
-    sleep_s = float(os.getenv("TASE_SLEEP","1.0"))
+        t = open('.tase_state.txt', 'r', encoding='utf-8').read()
+        m = re.search(r'last=(\d+)', t)
+        if m: return int(m.group(1))
+    except: pass
+    return 1702000
 
-    # Persist state
-    state_path = ".tase_state.txt"
-    if os.path.exists(state_path):
-        try:
-            last_id = int(open(state_path, "r", encoding="utf-8").read().strip() or last_id)
-        except:
-            pass
+def save_state(last_id: int):
+    with open('.tase_state.txt', 'w', encoding='utf-8') as f:
+        f.write(f"last={last_id}\nupdated={now_iso()}\n")
 
-    base_prefix = "https://mayafiles.tase.co.il/rhtm/1702001-1703000/"
-    trades = []
-    max_id = last_id + ahead
-    for i in range(last_id+1, max_id+1):
-        url = f"{base_prefix}H{i}.htm"
+# ------------ Scan modes ------------
+def scan_links(links: list[str], max_seconds: int):
+    start = time.time()
+    out = []
+    for raw in links:
+        link = raw.strip()
+        if not link: continue
+        url, hid = maya_to_print_url(link)
+        if not url: continue
+        if not exists(url):  # fast skip
+            continue
         try:
             html = fetch(url)
+            parsed = parse_report(html, url, hid)
+            if parsed: out.append(parsed)
         except Exception:
-            time.sleep(sleep_s); continue
-        try:
-            pdf_url = find_pdf_from_html_page(url, html)
-            if not pdf_url:
-                time.sleep(sleep_s); continue
-            pdf_bytes = fetch(pdf_url, binary=True)
-            trades.extend(parse_pdf(pdf_bytes, url, pdf_url))
-        except Exception:
-            # ignore individual failures
             pass
+        if time.time() - start > max_seconds:
+            break
+    return out
+
+def scan_range(max_seconds: int, scan_ahead: int, sleep_s: float, checkpoint_every: int):
+    start = time.time()
+    last = load_state()
+    begin = last + 1
+    end   = begin + max(0, scan_ahead)
+
+    out = []
+    scanned = 0
+    current = begin - 1
+
+    for hid in range(begin, end + 1):
+        current = hid
+        url = bucket_url_for(hid)
+        try:
+            if exists(url):                # cheap HEAD
+                html = fetch(url)          # only GET if exists
+                parsed = parse_report(html, url, hid)
+                if parsed:
+                    out.append(parsed)
+        except Exception:
+            pass
+
+        scanned += 1
+        if scanned % checkpoint_every == 0:
+            save_state(hid)
+
+        if (time.time() - start) > max_seconds:
+            save_state(hid)
+            break
+
         time.sleep(sleep_s)
-
-    # Save new state
-    with open(state_path, "w", encoding="utf-8") as f:
-        f.write(str(max_id))
-
-    return trades
-
-def main():
-    links = (os.getenv("TASE_LINKS") or "").strip()
-    trades = []
-    if links:
-        for raw in re.split(r'[\s\r\n]+', links):
-            if not raw: continue
-            try:
-                pdf_url, pdf_bytes = resolve_to_pdf(raw)
-                trades.extend(parse_pdf(pdf_bytes, raw, pdf_url))
-            except Exception as e:
-                # Continue on individual link failures
-                print(f"[WARN] {raw}: {e}")
     else:
-        trades = auto_scan_mode()
+        save_state(current)
 
-    save_csv(trades)
+    return out
 
-if __name__ == "__main__":
-    main()
+# ------------ Main ------------
+def main():
+    max_seconds       = int(os.getenv('TASE_MAX_SECONDS', '540'))   # 9m budget
+    scan_ahead        = int(os.getenv('TASE_SCAN_AHEAD', '280'))    # ids to probe
+    sleep_s           = float(os.getenv('TASE_SLEEP', '0.25'))      # politeness
+    checkpoint_every  = int(os.getenv('TASE_CHECKPOINT_EVERY', '25'))
+    min_nis           = float(os.getenv('MIN_NIS', '0'))
+    links_env         = os.getenv('TASE_LINKS', '').strip()
+
+    rows = []
+    if links_env:
+        links = [p for p in re.split(r'[\s,]+', links_env) if p]
+        rows.extend(scan_links(links, max_seconds))
+    else:
+        rows.extend(scan_range(max_seconds, scan_ahead, sleep_s, checkpoint_every))
+
+    # Always emit artifacts (even if empty)
+    trades_header = ['report_id','company','tase_code','qty_change','price_nis','est_total_nis','direction','date','link']
+    write_csv('tase_trades.csv', rows, trades_header)
+
+    # Aggregate to alerts
+    alerts = {}
+    for r in rows:
+        try:
+            val = float(r['est_total_nis']) if r['est_total_nis'] else 0.0
+        except:
+            val = 0.0
+        key = (r.get('company',''), r.get('tase_code',''))
+        if key not in alerts:
+            alerts[key] = {'company': key[0], 'tase_code': key[1], 'trades': 0, 'est_total_nis': 0.0, 'when': now_iso()}
+        alerts[key]['trades'] += 1
+        alerts[key]['est_total_nis'] += val
+
+    alert_rows = []
+    for v in alerts.values():
+        if v['est_total_nis'] >= min_nis:
+            alert_rows.append({
+                'company': v['company'],
+                'tase_code': v['tase_code'],
+                'trades': v['trades'],
+                'est_total_nis': f"{v['est_total_nis']:.2f}",
+                'when': v['when']
+            })
+
+    alert_header = ['company','tase_code','trades','est_total_nis','when']
+    write_csv('tase_alerts.csv', alert_rows, alert_header)
+
+    return 0
+
+if __name__ == '__main__':
+    sys.exit(main())
