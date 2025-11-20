@@ -4,13 +4,10 @@ run-name: "TASE (2x daily) — ${{ github.event_name }}"
 on:
   workflow_dispatch:
   schedule:
-    # GitHub cron is UTC; IL ≈ 09:45 / 17:35 → 07:45 / 15:35 UTC
-    - cron: '45 7 * * *'
-    - cron: '35 15 * * *'
+    - cron: '45 7 * * *'   # 09:45 IL
+    - cron: '35 15 * * *'  # 17:35 IL
 
-permissions:
-  contents: write   # needed to commit updated .tase_state.txt
-
+permissions: { contents: write }
 concurrency:
   group: tase-sells
   cancel-in-progress: true
@@ -18,7 +15,7 @@ concurrency:
 jobs:
   tase:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 20   # ⬅️ give the scanner headroom
 
     env:
       FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
@@ -28,26 +25,16 @@ jobs:
       SMTP_PORT:     ${{ secrets.SMTP_PORT }}
       TO_EMAIL:      ${{ secrets.TO_EMAIL }}
 
-      # --- Normal mode (auto-scan). Keep empty unless you want to force specific pages. ---
-      TASE_LINKS: ""
-
-      # Scan window (tuned to finish < ~10m). The script updates .tase_state.txt as it advances.
-      TASE_LAST_ID:    "1702700"  # one-time seed; real start comes from .tase_state.txt if present
-      TASE_SCAN_AHEAD: "600"      # probe up to 600 IDs per run
-      TASE_SLEEP:      "0.60"     # politeness delay (seconds)
-
-      # Optional: minimum total NIS to alert (0 = show all)
-      MIN_NIS:         "0"
+      TASE_LINKS: ""          # auto-scan
+      TASE_LAST_ID: "1702700" # seed; script updates .tase_state.txt
+      TASE_SCAN_AHEAD: "150"  # ⬅️ smaller window to finish on time
+      TASE_SLEEP: "0.40"      # polite + quicker than 0.5
+      MIN_NIS: "0"
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12', cache: 'pip' }
 
       - name: Install deps
         run: |
@@ -57,7 +44,7 @@ jobs:
       - name: Run TASE scanner
         run: python scripts/tase_scan.py
 
-      - name: Ensure outputs exist (don’t fail on “no results”)
+      - name: Ensure outputs exist
         run: |
           test -f tase_trades.csv || echo "company,tase_code,owner,action,qty,price,amount_nis,when,source" > tase_trades.csv
           test -f tase_alerts.csv || echo "company,tase_code,trades,est_total_nis,when" > tase_alerts.csv
