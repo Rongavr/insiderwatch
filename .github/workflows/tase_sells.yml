@@ -9,12 +9,12 @@ on:
         required: false
         default: ""
   schedule:
-    # GitHub cron is UTC; IL ≈ 09:45 / 17:35 → 07:45 / 15:35 UTC
+    # UTC times ≈ IL 09:45 / 17:35 → 07:45 / 15:35 UTC
     - cron: "45 7 * * *"
     - cron: "35 15 * * *"
 
 permissions:
-  contents: read
+  contents: write  # needed for the auto-commit step to push .tase_state.txt
 
 concurrency:
   group: tase-sells
@@ -39,9 +39,9 @@ jobs:
 
       # Auto-scan controls (used when TASE_LINKS is empty)
       TASE_LAST_ID:    "1702700"   # one-time seed; script persists progress in .tase_state.txt
-      TASE_SCAN_AHEAD: "180"       # cap number of IDs probed per run (≈ a few minutes)
+      TASE_SCAN_AHEAD: "180"       # cap number of IDs probed per run (~a few minutes)
       TASE_SLEEP:      "0.25"      # polite delay between fetches (seconds)
-      TIME_BUDGET_S:   "420"       # hard stop ~7 minutes to avoid job timeout
+      TIME_BUDGET_S:   "420"       # target ~7 min runtime (guarded below with `timeout`)
       MIN_NIS:         "0"         # filter threshold (0 = show all)
 
     steps:
@@ -50,16 +50,45 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: "pip"
-          cache-dependency-path: "requirements.txt"
 
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 lxml pandas python-dateutil pdfminer.six
 
-      - name: Run TASE scanner
-        run: python scripts/tase_scan.py
+      - name: Run TASE scanner (guarded & tolerate empty)
+        shell: bash
+        run: |
+          set +e
+          # Hard-stop the Python after TIME_BUDGET_S seconds to avoid job timeout
+          timeout "${TIME_BUDGET_S}s" python scripts/tase_scan.py
+          code=$?
+          set -e
+
+          # If the script "fails", treat known benign cases as success
+          if [ $code -ne 0 ]; then
+            if [ -f tase.log ] && grep -q "No rows this run" tase.log; then
+              echo "No rows; marking success."
+            elif [ $code -eq 124 ]; then
+              echo "Scanner hit shell timeout (${TIME_BUDGET_S}s) — proceeding with partial results."
+            else
+              echo "Scanner failed with exit $code"
+              exit $code
+            fi
+          fi
+
+          # Ensure CSVs exist (headers only) so artifact upload always works
+          python - <<'PY'
+import os, csv
+specs = [
+  ("tase_trades.csv", ["company","tase_code","insider","relation","action","amount_shares","price_nis","est_total_nis","when"]),
+  ("tase_alerts.csv", ["company","tase_code","trades","est_total_nis","when"]),
+]
+for path, headers in specs:
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(headers)
+PY
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
