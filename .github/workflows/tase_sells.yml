@@ -1,14 +1,20 @@
 name: TASE Sell Alerts (2x daily)
-run-name: "TASE (2x daily) — ${{ github.event_name }}"
+run-name: "TASE — ${{ github.event_name }}"
 
 on:
   workflow_dispatch:
+    inputs:
+      tase_links:
+        description: "Space/newline-separated Maya URLs to parse (leave blank for auto-scan)"
+        required: false
+        default: ""
   schedule:
-    - cron: '45 7 * * *'
-    - cron: '35 15 * * *'
+    # GitHub cron is UTC; IL ≈ 09:45 / 17:35 → 07:45 / 15:35 UTC
+    - cron: "45 7 * * *"
+    - cron: "35 15 * * *"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: tase-sells
@@ -17,7 +23,8 @@ concurrency:
 jobs:
   tase:
     runs-on: ubuntu-latest
-    timeout-minutes: 14
+    timeout-minutes: 10
+
     env:
       FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
       MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
@@ -26,34 +33,25 @@ jobs:
       SMTP_PORT:     ${{ secrets.SMTP_PORT }}
       TO_EMAIL:      ${{ secrets.TO_EMAIL }}
 
-      # Leave empty for auto-scan mode. To test specific reports, paste links separated by space/newline:
-      # Example: "https://maya.tase.co.il/he/reports/1702640 https://mayafiles.tase.co.il/rhtm/1702001-1703000/H1702656.htm"
-      TASE_LINKS: ""
+      # If you manually "Run workflow", whatever you type in the form is used here.
+      # On scheduled runs this is empty → auto-scan mode.
+      TASE_LINKS:    ${{ inputs.tase_links }}
 
-      # Auto-scan tuning (fits comfortably within the time budget)
-      TASE_LAST_ID: "1702700"        # used only if .tase_state.txt is missing
-      TASE_SCAN_AHEAD: "280"         # how many IDs to probe per run
-      TASE_SLEEP: "0.25"             # politeness delay (seconds) between IDs
-
-      # Hard stop so the job never hits the runner timeout (seconds)
-      TASE_MAX_SECONDS: "540"        # ~9 minutes of scanning time
-
-      # Checkpoint state every N IDs (write .tase_state.txt)
-      TASE_CHECKPOINT_EVERY: "25"
-
-      # Per-request timeout (seconds)
-      TASE_TIMEOUT_PER_FETCH: "12"
-
-      # Filter threshold for alerts (NIS)
-      MIN_NIS: "0"
+      # Auto-scan controls (used when TASE_LINKS is empty)
+      TASE_LAST_ID:    "1702700"   # one-time seed; script persists progress in .tase_state.txt
+      TASE_SCAN_AHEAD: "180"       # cap number of IDs probed per run (≈ a few minutes)
+      TASE_SLEEP:      "0.25"      # polite delay between fetches (seconds)
+      TIME_BUDGET_S:   "420"       # hard stop ~7 minutes to avoid job timeout
+      MIN_NIS:         "0"         # filter threshold (0 = show all)
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-          cache: 'pip'
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: "requirements.txt"
 
       - name: Install deps
         run: |
@@ -70,12 +68,12 @@ jobs:
           path: |
             tase_trades.csv
             tase_alerts.csv
+            tase.log
             .tase_state.txt
-          if-no-files-found: warn
+          if-no-files-found: ignore
 
-      - name: Commit .tase_state.txt
-        if: always()
+      - name: Persist scanner state
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "chore(tase): update .tase_state.txt [skip ci]"
+          commit_message: "chore(tase): update scanner state"
           file_pattern: .tase_state.txt
