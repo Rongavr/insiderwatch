@@ -4,10 +4,12 @@ run-name: "TASE (2x daily) — ${{ github.event_name }}"
 on:
   workflow_dispatch:
   schedule:
-    - cron: '45 7 * * *'   # 09:45 IL
-    - cron: '35 15 * * *'  # 17:35 IL
+    - cron: '45 7 * * *'
+    - cron: '35 15 * * *'
 
-permissions: { contents: write }
+permissions:
+  contents: write
+
 concurrency:
   group: tase-sells
   cancel-in-progress: true
@@ -15,8 +17,7 @@ concurrency:
 jobs:
   tase:
     runs-on: ubuntu-latest
-    timeout-minutes: 20   # ⬅️ give the scanner headroom
-
+    timeout-minutes: 14
     env:
       FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
       MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
@@ -25,16 +26,34 @@ jobs:
       SMTP_PORT:     ${{ secrets.SMTP_PORT }}
       TO_EMAIL:      ${{ secrets.TO_EMAIL }}
 
-      TASE_LINKS: ""          # auto-scan
-      TASE_LAST_ID: "1702700" # seed; script updates .tase_state.txt
-      TASE_SCAN_AHEAD: "150"  # ⬅️ smaller window to finish on time
-      TASE_SLEEP: "0.40"      # polite + quicker than 0.5
+      # Leave empty for auto-scan mode. To test specific reports, paste links separated by space/newline:
+      # Example: "https://maya.tase.co.il/he/reports/1702640 https://mayafiles.tase.co.il/rhtm/1702001-1703000/H1702656.htm"
+      TASE_LINKS: ""
+
+      # Auto-scan tuning (fits comfortably within the time budget)
+      TASE_LAST_ID: "1702700"        # used only if .tase_state.txt is missing
+      TASE_SCAN_AHEAD: "280"         # how many IDs to probe per run
+      TASE_SLEEP: "0.25"             # politeness delay (seconds) between IDs
+
+      # Hard stop so the job never hits the runner timeout (seconds)
+      TASE_MAX_SECONDS: "540"        # ~9 minutes of scanning time
+
+      # Checkpoint state every N IDs (write .tase_state.txt)
+      TASE_CHECKPOINT_EVERY: "25"
+
+      # Per-request timeout (seconds)
+      TASE_TIMEOUT_PER_FETCH: "12"
+
+      # Filter threshold for alerts (NIS)
       MIN_NIS: "0"
 
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: '3.12', cache: 'pip' }
+        with:
+          python-version: '3.12'
+          cache: 'pip'
 
       - name: Install deps
         run: |
@@ -44,13 +63,7 @@ jobs:
       - name: Run TASE scanner
         run: python scripts/tase_scan.py
 
-      - name: Ensure outputs exist
-        run: |
-          test -f tase_trades.csv || echo "company,tase_code,owner,action,qty,price,amount_nis,when,source" > tase_trades.csv
-          test -f tase_alerts.csv || echo "company,tase_code,trades,est_total_nis,when" > tase_alerts.csv
-          test -f .tase_state.txt || echo "${{ env.TASE_LAST_ID }}" > .tase_state.txt
-
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: tase_outputs
@@ -60,12 +73,9 @@ jobs:
             .tase_state.txt
           if-no-files-found: warn
 
-      - name: Commit updated scan state
-        continue-on-error: true
+      - name: Commit .tase_state.txt
         if: always()
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
           commit_message: "chore(tase): update .tase_state.txt [skip ci]"
           file_pattern: .tase_state.txt
-          commit_user_name: github-actions[bot]
-          commit_user_email: 41898282+github-actions[bot]@users.noreply.github.com
