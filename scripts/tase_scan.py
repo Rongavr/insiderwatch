@@ -1,259 +1,290 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os, re, time, csv, sys
-import requests
+import os, re, time, io, sys, math, csv, json
 from datetime import datetime, timezone
+import requests
+from bs4 import BeautifulSoup
+import pandas as pd
 
-# ------------ HTTP session ------------
-UA = os.getenv('TASE_USER_AGENT', 'insiderwatch-bot/1.0 (+github actions)')
-SESSION = requests.Session()
-SESSION.headers.update({'User-Agent': UA})
-TIMEOUT = float(os.getenv('TASE_TIMEOUT_PER_FETCH', '12'))
+# pdf text extraction
+from pdfminer.high_level import extract_text as pdf_extract_text
 
-def now_iso():
-    return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+UA = {"User-Agent": "Mozilla/5.0 (compatible; TASEScanner/1.0)"}
 
-def bucket_url_for(hid: int) -> str:
-    # Example: H1702640 -> /rhtm/1702001-1703000/H1702640.htm
-    start = (hid // 1000) * 1000 + 1
-    end   = start + 999
-    return f"https://mayafiles.tase.co.il/rhtm/{start}-{end}/H{hid}.htm"
+# ------------------------
+# Env + state management
+# ------------------------
+def getenv_str(name, default=""):
+    v = os.getenv(name)
+    return default if v is None else str(v)
 
-def maya_to_print_url(link: str):
-    # Accept either maya.tase.co.il/.../reports/1702640 or direct print Hxxxxx.htm
-    m = re.search(r'/reports/(\d+)', link)
-    if m:
-        hid = int(m.group(1))
-        return bucket_url_for(hid), hid
-    m2 = re.search(r'/H(\d+)\.htm', link)
-    if m2:
-        hid = int(m2.group(1))
-        return link, hid
-    return link, None
+def getenv_int(name, default):
+    v = os.getenv(name)
+    if v in (None, ""):
+        return int(default)
+    return int(v)
 
-def exists(url: str) -> bool:
+def getenv_float(name, default):
+    v = os.getenv(name)
+    if v in (None, ""):
+        return float(default)
+    return float(v)
+
+LINKS          = getenv_str("TASE_LINKS", "").strip()
+LAST_ID_SEED   = getenv_int("TASE_LAST_ID", 1702700)
+SCAN_AHEAD     = getenv_int("TASE_SCAN_AHEAD", 180)
+SLEEP_SEC      = getenv_float("TASE_SLEEP", 0.25)
+TIME_BUDGET_S  = getenv_int("TIME_BUDGET_S", 420)
+MIN_NIS        = getenv_float("MIN_NIS", 0.0)
+
+STATE_FILE = ".tase_state.txt"
+LOG_FILE   = "tase.log"
+
+def log(msg):
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{ts}] {msg}"
+    print(line, flush=True)
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+def read_state():
+    # If file exists and valid → use it; else use seed
     try:
-        r = SESSION.head(url, allow_redirects=True, timeout=TIMEOUT)
-        return r.status_code == 200
+        if os.path.exists(STATE_FILE):
+            s = open(STATE_FILE, "r", encoding="utf-8").read().strip()
+            if s.isdigit():
+                return int(s)
     except Exception:
-        return False
+        pass
+    return LAST_ID_SEED
 
-def fetch(url: str) -> str:
-    r = SESSION.get(url, timeout=TIMEOUT)
-    r.raise_for_status()
-    r.encoding = r.apparent_encoding
-    return r.text
-
-# ------------ Parsing helpers ------------
-def _to_int(s: str):
-    if s is None: return None
-    try: return int(s.replace(',', '').strip())
-    except: return None
-
-def _to_float(s: str):
-    if s is None: return None
-    try: return float(s.replace(',', '').strip())
-    except: return None
-
-def _extract_company(text: str) -> str:
-    # Heuristic: company usually appears just before "מספר ברשם"
-    lines = [ln.strip() for ln in text.splitlines()]
-    for i, ln in enumerate(lines[:80]):
-        if 'מספר ברשם' in ln:
-            for j in range(i-1, max(-1, i-6), -1):
-                if lines[j]:
-                    return lines[j]
-    # Fallback: scan first non-empty line
-    for ln in lines:
-        if ln: return ln
-    return ''
-
-def parse_report(text: str, url: str, hid: int | None):
-    # Look for insider/interest keywords
-    keywords = [
-        'שינויים בהחזקות בעלי עניין',
-        'שינוי החזקות בעלי עניין',
-        'החזקות בעלי עניין/נושאי משרה',
-        'החל להיות בעל ענין',
-        'חדל להיות בעל ענין',
-    ]
-    if not any(k in text for k in keywords):
-        return None
-
-    company = _extract_company(text)
-    m_code = re.search(r'מספר נייר ערך בבורסה[:\s]+(\d{6,7})', text)
-    tase_code = m_code.group(1) if m_code else ''
-
-    # Quantity change (may be negative)
-    m_qty = re.search(r'שינוי בכמות נייר(?:ות)? הערך[:\s]+([-\d,]+)', text)
-    qty = _to_int(m_qty.group(1)) if m_qty else None
-
-    # Price
-    price_nis = None
-    m_px = re.search(r'שער העסקה[:\s]+([\d,]+(?:\.\d+)?)\s*(אג\'|ש"ח|ש”ח|ש׳׳ח|שח)?', text)
-    if m_px:
-        p = _to_float(m_px.group(1))
-        unit = (m_px.group(2) or '').strip()
-        if p is not None:
-            price_nis = p * 0.01 if unit.startswith('אג') else p
-
-    est = None
-    if qty is not None and price_nis is not None:
-        est = abs(qty) * price_nis
-
-    # Change date (optional)
-    date_iso = ''
-    m_dt = re.search(r'תאריך השינוי[:\s]+(\d{2}/\d{2}/\d{4})', text)
-    if m_dt:
-        dd, mm, yyyy = m_dt.group(1).split('/')
-        date_iso = f'{yyyy}-{mm}-{dd}'
-
-    direction = ''
-    if qty is not None:
-        direction = 'SELL' if qty < 0 else 'BUY'
-
-    return {
-        'report_id': str(hid) if hid else '',
-        'company': company,
-        'tase_code': tase_code,
-        'qty_change': qty if qty is not None else '',
-        'price_nis': f'{price_nis:.4f}' if price_nis is not None else '',
-        'est_total_nis': f'{est:.2f}' if est is not None else '',
-        'direction': direction,
-        'date': date_iso,
-        'link': url
-    }
-
-def write_csv(path: str, rows: list[dict], header: list[str]):
-    with open(path, 'w', newline='', encoding='utf-8') as f:
-        w = csv.DictWriter(f, fieldnames=header)
-        w.writeheader()
-        for r in rows:
-            w.writerow(r)
-
-# ------------ State ------------
-def load_state() -> int:
-    if not os.path.exists('.tase_state.txt'):
-        seed = os.getenv('TASE_LAST_ID', '1702000')
-        try: return int(seed)
-        except: return 1702000
+def write_state(last_id):
     try:
-        t = open('.tase_state.txt', 'r', encoding='utf-8').read()
-        m = re.search(r'last=(\d+)', t)
-        if m: return int(m.group(1))
-    except: pass
-    return 1702000
+        with open(STATE_FILE, "w", encoding="utf-8") as f:
+            f.write(str(last_id))
+    except Exception as e:
+        log(f"WARN: failed writing state: {e}")
 
-def save_state(last_id: int):
-    with open('.tase_state.txt', 'w', encoding='utf-8') as f:
-        f.write(f"last={last_id}\nupdated={now_iso()}\n")
+# ------------------------
+# URL helpers
+# ------------------------
+def mayafiles_htm_url(report_id: int) -> str:
+    # H1702656.htm lives under bucket "1702001-1703000"
+    start = (report_id // 1000) * 1000 + 1
+    end   = start + 999
+    return f"https://mayafiles.tase.co.il/rhtm/{start}-{end}/H{report_id}.htm"
 
-# ------------ Scan modes ------------
-def scan_links(links: list[str], max_seconds: int):
-    start = time.time()
-    out = []
-    for raw in links:
-        link = raw.strip()
-        if not link: continue
-        url, hid = maya_to_print_url(link)
-        if not url: continue
-        if not exists(url):  # fast skip
-            continue
-        try:
-            html = fetch(url)
-            parsed = parse_report(html, url, hid)
-            if parsed: out.append(parsed)
-        except Exception:
-            pass
-        if time.time() - start > max_seconds:
-            break
-    return out
+def maya_htm_attachment(report_id: int) -> str:
+    return f"https://maya.tase.co.il/he/reports/{report_id}?attachmentType=htm"
 
-def scan_range(max_seconds: int, scan_ahead: int, sleep_s: float, checkpoint_every: int):
-    start = time.time()
-    last = load_state()
-    begin = last + 1
-    end   = begin + max(0, scan_ahead)
+def maya_pdf_attachment(report_id: int) -> str:
+    return f"https://maya.tase.co.il/he/reports/{report_id}?attachmentType=pdf1"
 
-    out = []
-    scanned = 0
-    current = begin - 1
-
-    for hid in range(begin, end + 1):
-        current = hid
-        url = bucket_url_for(hid)
-        try:
-            if exists(url):                # cheap HEAD
-                html = fetch(url)          # only GET if exists
-                parsed = parse_report(html, url, hid)
-                if parsed:
-                    out.append(parsed)
-        except Exception:
-            pass
-
-        scanned += 1
-        if scanned % checkpoint_every == 0:
-            save_state(hid)
-
-        if (time.time() - start) > max_seconds:
-            save_state(hid)
-            break
-
-        time.sleep(sleep_s)
+def fetch_text(url: str, timeout=15) -> str:
+    r = requests.get(url, headers=UA, timeout=timeout, allow_redirects=True)
+    ct = r.headers.get("Content-Type", "")
+    if "application/pdf" in ct or url.lower().endswith(".pdf"):
+        # convert pdf bytes to text
+        text = pdf_extract_text(io.BytesIO(r.content))
+        return text or ""
     else:
-        save_state(current)
+        r.encoding = r.apparent_encoding or "utf-8"
+        return r.text or ""
+
+def try_fetch_report_text(report_id: int):
+    # Try stable order: mayafiles H*.htm → maya htm attachment → maya pdf attachment
+    for url in (mayafiles_htm_url(report_id),
+                maya_htm_attachment(report_id),
+                maya_pdf_attachment(report_id)):
+        try:
+            t = fetch_text(url)
+            if t and len(t) > 100:
+                return url, t
+        except Exception as e:
+            log(f"INFO: fetch failed {url}: {e}")
+    return None, None
+
+# ------------------------
+# Parsers (Hebrew forms)
+# ------------------------
+
+RE_COMPANY   = re.compile(r"שם\s+מקוצר:\s*(.+)", re.UNICODE)
+RE_SEC_NAME  = re.compile(r"שם\s+וסוג\s+נייר\s+הערך[:\s]+(.+)", re.UNICODE)
+RE_TASE_CODE = re.compile(r"מספר\s+נייר\s+ערך\b[:\s]+(\d+)", re.UNICODE)
+
+# sale (“קיטון … עקב מכירה”) pattern:
+RE_SALE_KIND = re.compile(r"מהות\s+השינוי[:\s]+.*קיטון.*מכירה", re.UNICODE)
+RE_QTY_DOWN  = re.compile(r"שינוי\s+בכמות\s+ניירות\s+הערך[:\s]+([\d,\.]+)\s*-\s*", re.UNICODE)
+RE_PRICE_AG  = re.compile(r"שער\s+העסקה[:\s]+([\d\.,]+)\s*.*אג", re.UNICODE)
+
+# “חדל להיות בעל ענין” cards (Gencell example)
+RE_STOP_BEI  = re.compile(r"חדל\s+להיות\s+בעל\s+ענין", re.UNICODE)
+
+def text_from_html(html: str) -> str:
+    soup = BeautifulSoup(html, "lxml")
+    return soup.get_text("\n", strip=True)
+
+def extract_trades_from_text(text: str, report_id: int, src_url: str):
+    """
+    Return list of dicts with computed NIS for clear 'sale' cases.
+    We keep it conservative: if we lack qty or price in agorot → skip.
+    """
+    out = []
+
+    # Try to locate security name / code (best-effort)
+    sec_name = None
+    m = RE_SEC_NAME.search(text)
+    if m: sec_name = m.group(1).strip()
+
+    tase_code = None
+    m = RE_TASE_CODE.search(text)
+    if m: tase_code = m.group(1).strip()
+
+    # Detect explicit sale forms
+    sale_like = bool(RE_SALE_KIND.search(text)) or ("קיטון" in text and "מכירה" in text)
+
+    qty = None
+    m = RE_QTY_DOWN.search(text)
+    if m:
+        qty = int(re.sub(r"[^\d]", "", m.group(1)))
+
+    price_agorot = None
+    m = RE_PRICE_AG.search(text)
+    if m:
+        # "28.45" agorot -> NIS = 0.2845
+        try:
+            price_agorot = float(m.group(1).replace(",", ""))
+        except Exception:
+            price_agorot = None
+
+    # Compute if we have enough data
+    if sale_like and qty and price_agorot is not None:
+        est_nis = qty * (price_agorot / 100.0)
+        out.append({
+            "company": sec_name or "",
+            "tase_code": tase_code or "",
+            "qty_sold": qty,
+            "price_agorot": price_agorot,
+            "est_total_nis": round(est_nis, 2),
+            "report_id": report_id,
+            "url": src_url,
+            "kind": "sale"
+        })
+        return out
+
+    # Otherwise, record “signal” items we might care about later (no NIS)
+    if RE_STOP_BEI.search(text):
+        out.append({
+            "company": sec_name or "",
+            "tase_code": tase_code or "",
+            "qty_sold": 0,
+            "price_agorot": None,
+            "est_total_nis": 0.0,
+            "report_id": report_id,
+            "url": src_url,
+            "kind": "ceased_interested_party"
+        })
 
     return out
 
-# ------------ Main ------------
+# ------------------------
+# Main
+# ------------------------
 def main():
-    max_seconds       = int(os.getenv('TASE_MAX_SECONDS', '540'))   # 9m budget
-    scan_ahead        = int(os.getenv('TASE_SCAN_AHEAD', '280'))    # ids to probe
-    sleep_s           = float(os.getenv('TASE_SLEEP', '0.25'))      # politeness
-    checkpoint_every  = int(os.getenv('TASE_CHECKPOINT_EVERY', '25'))
-    min_nis           = float(os.getenv('MIN_NIS', '0'))
-    links_env         = os.getenv('TASE_LINKS', '').strip()
-
+    start_time = time.time()
     rows = []
-    if links_env:
-        links = [p for p in re.split(r'[\s,]+', links_env) if p]
-        rows.extend(scan_links(links, max_seconds))
+
+    if LINKS:
+        # Mode A: explicit links (space/newline separated)
+        urls = [u for u in re.split(r"[\s\r\n]+", LINKS) if u.strip()]
+        log(f"MODE A: parsing {len(urls)} provided URLs")
+        for u in urls:
+            if time.time() - start_time > TIME_BUDGET_S:
+                log("Time budget reached; stopping.")
+                break
+            try:
+                txt = fetch_text(u)
+                if "<html" in txt.lower():
+                    txt = text_from_html(txt)
+                rows.extend(extract_trades_from_text(txt, report_id=0, src_url=u))
+                time.sleep(SLEEP_SEC)
+            except Exception as e:
+                log(f"ERROR parsing {u}: {e}")
+
+        # No state updates in Mode A
     else:
-        rows.extend(scan_range(max_seconds, scan_ahead, sleep_s, checkpoint_every))
+        # Mode B: auto-scan mayafiles id bucket
+        last_id = read_state()
+        log(f"MODE B: auto-scan starting at id={last_id} window={SCAN_AHEAD}")
 
-    # Always emit artifacts (even if empty)
-    trades_header = ['report_id','company','tase_code','qty_change','price_nis','est_total_nis','direction','date','link']
-    write_csv('tase_trades.csv', rows, trades_header)
+        scanned = 0
+        cur = last_id
+        end_id = last_id + SCAN_AHEAD - 1
 
-    # Aggregate to alerts
-    alerts = {}
-    for r in rows:
-        try:
-            val = float(r['est_total_nis']) if r['est_total_nis'] else 0.0
-        except:
-            val = 0.0
-        key = (r.get('company',''), r.get('tase_code',''))
-        if key not in alerts:
-            alerts[key] = {'company': key[0], 'tase_code': key[1], 'trades': 0, 'est_total_nis': 0.0, 'when': now_iso()}
-        alerts[key]['trades'] += 1
-        alerts[key]['est_total_nis'] += val
+        while cur <= end_id:
+            if time.time() - start_time > TIME_BUDGET_S:
+                log("Time budget reached; stopping.")
+                break
 
-    alert_rows = []
-    for v in alerts.values():
-        if v['est_total_nis'] >= min_nis:
-            alert_rows.append({
-                'company': v['company'],
-                'tase_code': v['tase_code'],
-                'trades': v['trades'],
-                'est_total_nis': f"{v['est_total_nis']:.2f}",
-                'when': v['when']
-            })
+            url, txt = try_fetch_report_text(cur)
+            if txt:
+                if "<html" in txt.lower():
+                    txt2 = text_from_html(txt)
+                else:
+                    txt2 = txt
+                rows.extend(extract_trades_from_text(txt2, report_id=cur, src_url=url))
+            else:
+                log(f"MISS {cur}")
 
-    alert_header = ['company','tase_code','trades','est_total_nis','when']
-    write_csv('tase_alerts.csv', alert_rows, alert_header)
+            scanned += 1
+            cur += 1
+            time.sleep(SLEEP_SEC)
 
-    return 0
+        # Persist next starting id to avoid rescanning
+        write_state(cur)
 
-if __name__ == '__main__':
-    sys.exit(main())
+    # Build DataFrames + filter + save
+    if rows:
+        df = pd.DataFrame(rows)
+
+        # filter by MIN_NIS when applicable
+        def pass_filter(r):
+            if r.get("kind") == "sale" and r.get("est_total_nis"):
+                return r["est_total_nis"] >= MIN_NIS
+            return True
+
+        df = df[df.apply(pass_filter, axis=1)].reset_index(drop=True)
+
+        # Save raw trades
+        df_cols = ["company", "tase_code", "qty_sold", "price_agorot",
+                   "est_total_nis", "report_id", "url", "kind"]
+        for c in df_cols:
+            if c not in df.columns:
+                df[c] = None
+        df[df_cols].to_csv("tase_trades.csv", index=False, encoding="utf-8")
+
+        # Aggregate alerts by company
+        ag = (df.groupby(["company", "tase_code"], dropna=False)
+                .agg(trades=("report_id","count"),
+                     est_total_nis=("est_total_nis","sum"))
+                .reset_index())
+        ag["when"] = datetime.now(timezone.utc).isoformat()
+        ag.to_csv("tase_alerts.csv", index=False, encoding="utf-8")
+
+        log(f"SAVED: {len(df)} trade rows; {len(ag)} alert rows")
+    else:
+        # still emit headers so the artifact exists
+        pd.DataFrame(columns=["company","tase_code","qty_sold","price_agorot",
+                              "est_total_nis","report_id","url","kind"]).to_csv("tase_trades.csv", index=False, encoding="utf-8")
+        pd.DataFrame(columns=["company","tase_code","trades","est_total_nis","when"]).to_csv("tase_alerts.csv", index=False, encoding="utf-8")
+        log("No rows this run.")
+
+if __name__ == "__main__":
+    # fresh log each run
+    try:
+        if os.path.exists(LOG_FILE):
+            os.remove(LOG_FILE)
+    except Exception:
+        pass
+    main()
