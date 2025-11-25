@@ -1,57 +1,23 @@
-name: Insider SELL Alerts (US)
+name: US Insider SELL Alerts (manual)
 
 on:
-  workflow_dispatch:
-  schedule:
-    # TASE local 09:45 / 13:30 / 17:35  => UTC 07:45 / 11:30 / 15:35
-    - cron: '45 7 * * *'
-    - cron: '30 11 * * *'
-    - cron: '35 15 * * *'
-    # US local 16:30 / 19:00 / 23:00 (Asia/Jerusalem UTC+2) => UTC 14:30 / 17:00 / 21:00
-    - cron: '30 14 * * *'
-    - cron: '0 17 * * *'
-    - cron: '0 21 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
 
 jobs:
-  sell_alerts:
+  us_sells_manual:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    env:
-      SEC_EMAIL: ${{ secrets.MAIL_USERNAME }}
-      MIN_USD: "100000"
-      LOOKBACK_HOURS: "12"
-      EXCLUDE_10B5: "1"
-      EXCLUDE_COVER: "1"
-      PEOPLE_ONLY: "1"
-      SMTP_SERVER: smtp.gmail.com
-      SMTP_PORT: "587"
-      MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
-      MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
-      TO_EMAIL:      ${{ secrets.TO_EMAIL }}
-      FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
-
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
-
+          python-version: "3.12"
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install requests pandas beautifulsoup4 lxml python-dateutil
-
-      - name: Run SELL alerts
-        run: |
-          python scripts/sell_alerts.py
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: insider_sell_outputs
-          path: |
-            insider_trades.csv
-            alerts.csv
+          pip install -r requirements.txt || true
+          pip install requests pandas python-dateutil beautifulsoup4 lxml
+      - name: Run US insider scan (manual)
+        run: python scripts/us_sells.py
