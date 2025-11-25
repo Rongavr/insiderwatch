@@ -1,0 +1,84 @@
+name: Daily Insider Digest (US + TASE)
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Israel = UTC+2 in late Nov → 09:00 IL == 07:00 UTC
+    - cron: "0 7 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-insider-digest
+  cancel-in-progress: true
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      FROM_EMAIL:    ${{ secrets.FROM_EMAIL }}
+      MAIL_USERNAME: ${{ secrets.MAIL_USERNAME }}
+      MAIL_PASSWORD: ${{ secrets.MAIL_PASSWORD }}
+      SMTP_SERVER:   ${{ secrets.SMTP_SERVER }}
+      SMTP_PORT:     ${{ secrets.SMTP_PORT }}
+      TO_EMAIL:      ${{ secrets.TO_EMAIL }}
+
+      # TASE scan tuning (keep it fast & within budget)
+      TASE_LINKS: ""           # empty = auto-scan last IDs
+      TASE_LAST_ID: "1702900"  # seed; script persists to .tase_state.txt
+      TASE_SCAN_AHEAD: "160"   # probe up to 160 ids per run (~a few minutes)
+      TASE_SLEEP: "0.25"       # politeness delay (seconds)
+      TIME_BUDGET_S: "420"     # ~7 minutes safety limit inside the script
+      MIN_NIS: "0"             # no value floor (you can raise later)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4 lxml pandas python-dateutil pdfminer.six
+
+      - name: Run US scanner
+        run: |
+          set -e
+          if [ -f insider_scanner.py ]; then
+            python insider_scanner.py
+          elif [ -f scripts/insider_scanner.py ]; then
+            python scripts/insider_scanner.py
+          else
+            echo "[WARN] No US scanner script found; continuing without US data."
+          fi
+
+      - name: Run TASE scanner (budgeted)
+        run: |
+          python scripts/tase_scan.py
+
+      - name: Build & send daily email (HTML table)
+        run: |
+          python scripts/daily_digest.py
+
+      - name: Save artifacts (optional)
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest_outputs
+          path: |
+            insider_trades.csv
+            tase_trades.csv
+            tase.log
+            .tase_state.txt
+          if-no-files-found: ignore
+
+      - name: Persist TASE scanner state
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: persist .tase_state.txt"
+          file_pattern: .tase_state.txt
