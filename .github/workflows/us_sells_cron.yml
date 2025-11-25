@@ -1,10 +1,10 @@
-name: Insider SELL Alerts (US – Scheduled)
+name: US Insider SELL Alerts (daily)
+run-name: "US — ${{ github.event_name }}"
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
   schedule:
-    - cron: '10 14 * * *'
-    - cron: '10 21 * * *'
+    - cron: "5 7 * * *"   # ~09:05 IL
 
 permissions:
   contents: read
@@ -16,18 +16,20 @@ concurrency:
 jobs:
   us_sells:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install pandas requests python-dateutil lxml beautifulsoup4
+          pip install -r requirements.txt || true
+          pip install requests pandas python-dateutil beautifulsoup4 lxml
       - name: Run US insider scan
-        run: python scripts/insider_sell_scan.py
+        run: python scripts/us_sells.py
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -35,4 +37,4 @@ jobs:
           path: |
             alerts.csv
             insider_trades.csv
-          if-no-files-found: warn
+          if-no-files-found: ignore
